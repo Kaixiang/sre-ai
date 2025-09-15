@@ -1,0 +1,26 @@
+{
+  "name": "files",
+  "version": "1.0.0",
+  "transport": {"type": "stdio"},
+  "tools": [
+    {
+      "name": "fs.readFile",
+      "description": "Read file contents",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "pattern": "^/|^\\.\/"
+          }
+        },
+        "required": ["path"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {"content": {"type": "string"}}
+      }
+    }
+  ],
+  "capabilities": ["read_files"]
+}

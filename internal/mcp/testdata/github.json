@@ -1,0 +1,47 @@
+{
+  "name": "github",
+  "version": "1.0.0",
+  "transport": {
+    "type": "stdio"
+  },
+  "auth": {
+    "env": "GITHUB_TOKEN"
+  },
+  "tools": [
+    {
+      "name": "gh.searchIssues",
+      "description": "Search issues and PRs",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "q": {"type": "string"},
+          "limit": {"type": "integer", "default": 20}
+        },
+        "required": ["q"]
+      },
+      "output_schema": {"type": "array", "items": {"type": "object"}}
+    },
+    {
+      "name": "gh.getWorkflowRun",
+      "description": "Fetch a GitHub Actions run by id",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "owner": {"type": "string"},
+          "repo": {"type": "string"},
+          "id": {"type": "integer"}
+        },
+        "required": ["owner", "repo", "id"]
+      },
+      "output_schema": {"type": "object"}
+    }
+  ],
+  "resources": [
+    {
+      "name": "gh.repo",
+      "uri_template": "github://{owner}/{repo}",
+      "description": "Mount a repo as a resource for context"
+    }
+  ],
+  "capabilities": ["net_read"]
+}
