@@ -5,7 +5,7 @@ import (
 	"os"
 
 	"github.com/example/sre-ai/internal/config"
-	"github.com/example/sre-ai/internal/mcp"
+	// "github.com/example/sre-ai/internal/mcp"
 	"github.com/spf13/cobra"
 )
 
@@ -27,9 +27,9 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("load config: %w", err)
 		}
 
-		if err := mcp.Warmup(cmd.Context(), &globalOpts); err != nil {
-			return fmt.Errorf("warmup MCP: %w", err)
-		}
+		// if err := mcp.Warmup(cmd.Context(), &globalOpts); err != nil {
+		// 	return fmt.Errorf("warmup MCP: %w", err)
+		// }
 
 		return nil
 	},

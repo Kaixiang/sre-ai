@@ -28,13 +28,22 @@ type GlobalOptions struct {
     AutoConfirm   bool
 }
 
-// DefaultConfigPath resolves the default config file path.
-func DefaultConfigPath() (string, error) {
+// ConfigDir returns the directory that stores sre-ai configuration artifacts.
+func ConfigDir() (string, error) {
     home, err := os.UserHomeDir()
     if err != nil {
         return "", fmt.Errorf("resolve home dir: %w", err)
     }
-    return filepath.Join(home, ".config", "sre-ai", "config.yaml"), nil
+    return filepath.Join(home, ".config", "sre-ai"), nil
+}
+
+// DefaultConfigPath resolves the default config file path.
+func DefaultConfigPath() (string, error) {
+    dir, err := ConfigDir()
+    if err != nil {
+        return "", err
+    }
+    return filepath.Join(dir, "config.yaml"), nil
 }
 
 // Load merges configuration from file and environment into the provided options.
