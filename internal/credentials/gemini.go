@@ -2,6 +2,8 @@ package credentials
 
 import (
     "encoding/json"
+    "errors"
+    "fmt"
     "os"
     "path/filepath"
     "time"
@@ -54,4 +56,29 @@ func SaveGeminiKey(key string) (string, error) {
     }
 
     return path, nil
+}
+
+// LoadGeminiKey retrieves the persisted Gemini API key if present.
+func LoadGeminiKey() (string, error) {
+    path, err := GeminiKeyPath()
+    if err != nil {
+        return "", err
+    }
+
+    data, err := os.ReadFile(path)
+    if err != nil {
+        if errors.Is(err, os.ErrNotExist) {
+            return "", fmt.Errorf("gemini credentials not found; run 'sre-ai config login --provider gemini'")
+        }
+        return "", err
+    }
+
+    var payload geminiCredential
+    if err := json.Unmarshal(data, &payload); err != nil {
+        return "", err
+    }
+    if payload.APIKey == "" {
+        return "", fmt.Errorf("gemini credential file %s missing api_key", path)
+    }
+    return payload.APIKey, nil
 }

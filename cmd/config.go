@@ -13,6 +13,7 @@ import (
 
     "github.com/example/sre-ai/internal/config"
     "github.com/example/sre-ai/internal/credentials"
+    "github.com/example/sre-ai/internal/providers"
     "github.com/spf13/cobra"
 )
 
@@ -192,8 +193,8 @@ func resolveConfigPath() (string, error) {
 }
 
 func defaultConfigYAML() string {
-    return `model: gpt-4o-mini
-provider: openai
+    return fmt.Sprintf(`model: %s
+provider: gemini
 default_caps: [read_files]
 mcp:
   servers:
@@ -214,5 +215,5 @@ auth:
 logging:
   level: info
   redact: true
-`
+`, providers.DefaultGeminiModel())
 }
