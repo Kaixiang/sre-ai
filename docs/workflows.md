@@ -224,7 +224,7 @@ outputs:
       {{- end }}
 ```
 
-When you run `sre-ai agent run --json`, the CLI emits a `Result` object:
+When you run `sre-ai agent run --json`, the CLI emits a `Result` object, and `--text` prints concatenated string outputs (useful for piping drafts straight to files):
 
 ```json
 {
@@ -237,6 +237,8 @@ When you run `sre-ai agent run --json`, the CLI emits a `Result` object:
   }
 }
 ```
+
+With `--text`, the CLI concatenates string outputs (prefixed with section headers when multiple) so you can do `sre-ai agent run ... --text > rca.md`.
 
 You can redirect these strings into files or use tooling like `jq`/`yq` to extract them.
 
@@ -317,3 +319,4 @@ sre-ai agent run --workflow workflows/lark_oncall.yaml --json \
 8. Share the workflow file alongside any sample data so teammates can iterate quickly.
 
 With these building blocks you can encode bespoke on-call triage routines, repetitive RCA tasks, or other agentic workflows in a few dozen lines of YAML.
+

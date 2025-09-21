@@ -18,6 +18,7 @@ type GlobalOptions struct {
     MaxTokens     int
     Session       string
     JSON          bool
+    Text          bool
     Quiet         bool
     Verbose       int
     NoInteractive bool

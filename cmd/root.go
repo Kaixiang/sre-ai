@@ -56,6 +56,7 @@ func init() {
     flags.IntVar(&globalOpts.MaxTokens, "max-tokens", globalOpts.MaxTokens, "Maximum tokens to request")
     flags.StringVar(&globalOpts.Session, "session", globalOpts.Session, "Session name for sticky context")
     flags.BoolVar(&globalOpts.JSON, "json", globalOpts.JSON, "Emit machine-readable JSON output")
+    flags.BoolVar(&globalOpts.Text, "text", globalOpts.Text, "Emit raw text output when supported")
     flags.BoolVarP(&globalOpts.Quiet, "quiet", "q", globalOpts.Quiet, "Silence human-readable output")
     flags.CountVarP(&globalOpts.Verbose, "verbose", "v", "Increase verbosity for debugging")
     flags.BoolVar(&globalOpts.NoInteractive, "no-interactive", globalOpts.NoInteractive, "Do not prompt interactively")

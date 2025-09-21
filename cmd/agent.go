@@ -1,8 +1,11 @@
 package cmd
 
 import (
+    "encoding/json"
     "errors"
     "fmt"
+    "sort"
+    "strings"
 
     "github.com/example/sre-ai/internal/agent"
     "github.com/spf13/cobra"
@@ -52,6 +55,14 @@ func newAgentRunCmd() *cobra.Command {
                 status = "planned"
             }
             human := fmt.Sprintf("Workflow %s %s (%d steps)", result.Workflow, status, len(result.Steps))
+            if globalOpts.Text && !globalOpts.JSON {
+                textOut := formatAgentTextOutput(result)
+                if textOut == "" {
+                    textOut = human
+                }
+                fmt.Fprintln(cmd.OutOrStdout(), textOut)
+                return nil
+            }
             return printOutput(cmd, result, human)
         },
     }
@@ -93,4 +104,51 @@ func newAgentOncallCmd() *cobra.Command {
     cmd.Flags().StringVar(&output, "output", "", "Optional output file for postmortem draft")
 
     return cmd
+}
+
+
+func formatAgentTextOutput(res *agent.Result) string {
+    if res == nil || len(res.Outputs) == 0 {
+        return ""
+    }
+
+    keys := make([]string, 0, len(res.Outputs))
+    for k := range res.Outputs {
+        keys = append(keys, k)
+    }
+    sort.Strings(keys)
+
+    var buf strings.Builder
+    multi := len(keys) > 1
+    for _, key := range keys {
+        value := res.Outputs[key]
+        if value == nil {
+            continue
+        }
+        if buf.Len() > 0 {
+            buf.WriteString("\n\n")
+        }
+        if multi {
+            buf.WriteString("## ")
+            buf.WriteString(key)
+            buf.WriteString("\n")
+        }
+        switch v := value.(type) {
+        case string:
+            buf.WriteString(v)
+        case fmt.Stringer:
+            buf.WriteString(v.String())
+        case []byte:
+            buf.Write(v)
+        default:
+            data, err := json.MarshalIndent(v, "", "  ")
+            if err != nil {
+                buf.WriteString(fmt.Sprintf("%v", v))
+            } else {
+                buf.Write(data)
+            }
+        }
+    }
+
+    return buf.String()
 }
