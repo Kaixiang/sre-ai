@@ -1,25 +1,12 @@
 package cmd
 
 import (
+    "errors"
     "fmt"
-    "time"
 
+    "github.com/example/sre-ai/internal/agent"
     "github.com/spf13/cobra"
 )
-
-type agentPlan struct {
-    Session string          `json:"session"`
-    Goal    string          `json:"goal"`
-    Tools   []string        `json:"tools"`
-    Caps    []string        `json:"caps"`
-    Steps   []agentPlanStep `json:"steps"`
-}
-
-type agentPlanStep struct {
-    ID      string `json:"id"`
-    Intent  string `json:"intent"`
-    Command string `json:"command"`
-}
 
 func newAgentCmd() *cobra.Command {
     cmd := &cobra.Command{
@@ -33,71 +20,45 @@ func newAgentCmd() *cobra.Command {
 }
 
 func newAgentRunCmd() *cobra.Command {
-    var goal string
-    var tools []string
-    var caps []string
-    var session string
+    var workflowPath string
+    var inputPairs []string
     var planOnly bool
 
     cmd := &cobra.Command{
         Use:   "run",
-        Short: "Plan and execute an agent goal",
+        Short: "Execute an agent workflow",
         RunE: func(cmd *cobra.Command, args []string) error {
-            sessionID := session
-            if sessionID == "" {
-                sessionID = fmt.Sprintf("agent-%d", time.Now().Unix())
+            if workflowPath == "" {
+                return errors.New("--workflow is required")
             }
 
-            plan := agentPlan{
-                Session: sessionID,
-                Goal:    goal,
-                Tools:   tools,
-                Caps:    caps,
-                Steps: []agentPlanStep{
-                    {ID: "step-1", Intent: "Inspect rollout", Command: "kubectl -n checkout get deploy checkout-web"},
-                    {ID: "step-2", Intent: "Check pods", Command: "kubectl -n checkout get pods"},
-                },
-            }
-
-            human := fmt.Sprintf("Agent plan for %s with %d steps", goal, len(plan.Steps))
-            if err := printOutput(cmd, plan, human); err != nil {
+            provided, err := agent.ParseInputPairs(inputPairs)
+            if err != nil {
                 return err
             }
 
-            if planOnly || globalOpts.DryRun {
-                return nil
+            runner, err := agent.NewRunner(workflowPath, &globalOpts, provided)
+            if err != nil {
+                return err
             }
 
-            if !globalOpts.AutoConfirm {
-                if globalOpts.NoInteractive {
-                    return fmt.Errorf("cannot execute agent without --confirm in no-interactive mode")
-                }
-                confirmed, err := promptForConfirmation(cmd, "Execute agent steps in dry-run mode?")
-                if err != nil {
-                    return err
-                }
-                if !confirmed {
-                    return nil
-                }
+            result, err := runner.Execute(cmd.Context(), planOnly)
+            if err != nil {
+                return err
             }
 
-            actions := make([]map[string]any, 0, len(plan.Steps))
-            for _, step := range plan.Steps {
-                actions = append(actions, map[string]any{
-                    "intent":  step.Intent,
-                    "command": step.Command,
-                })
+            status := "completed"
+            if result.PlanOnly {
+                status = "planned"
             }
-
-            return runKubectlDryRun(cmd, actions)
+            human := fmt.Sprintf("Workflow %s %s (%d steps)", result.Workflow, status, len(result.Steps))
+            return printOutput(cmd, result, human)
         },
     }
 
-    cmd.Flags().StringVar(&goal, "goal", "", "Goal statement for the agent")
-    cmd.Flags().StringSliceVar(&tools, "tools", nil, "Explicit tool allowlist")
-    cmd.Flags().StringSliceVar(&caps, "cap", nil, "Capabilities for the run")
-    cmd.Flags().StringVar(&session, "session", "", "Session id to reuse")
-    cmd.Flags().BoolVar(&planOnly, "plan", false, "Only output plan stage")
+    cmd.Flags().StringVar(&workflowPath, "workflow", "", "Path to workflow YAML definition")
+    cmd.Flags().StringSliceVar(&inputPairs, "input", nil, "Workflow input as key=value (repeatable)")
+    cmd.Flags().BoolVar(&planOnly, "plan", false, "Only validate the workflow without executing steps")
 
     return cmd
 }

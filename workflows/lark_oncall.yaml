@@ -1,0 +1,126 @@
+version: 0.1
+name: lark-oncall-rca
+description: Analyze a Lark incident chat thread and draft RCA artifacts.
+agent:
+  provider: gemini
+  model: gemini-1.5-flash-latest
+inputs:
+  thread_path:
+    type: string
+    description: Relative path to the Lark thread export JSON
+    default: sample_data/lark_thread.json
+  incident_goal:
+    type: string
+    description: Desired outcome or mitigation goal for the incident
+    required: false
+tools:
+  lark_thread:
+    kind: sample
+    description: Static export of a Lark incident conversation
+    sample_file: sample_data/lark_thread.json
+workflow:
+  stages:
+    - id: collect_chat
+      kind: collect
+      description: Load the incident conversation
+      steps:
+        - name: load_thread
+          type: tool
+          tool: lark_thread
+          params:
+            file: "{{ .inputs.thread_path }}"
+          capture:
+            thread: data
+    - id: analyze_chat
+      kind: plan
+      description: Summarize incident details and timeline
+      steps:
+        - name: summarize_thread
+          type: prompt
+          description: Extract key insights and actionable follow-ups from the chat
+          template: |
+            You are the incident commander preparing evidence for an RCA after an outage.
+            {{- with index .inputs "incident_goal" }}
+            User-stated mitigation goal: {{ . }}
+            {{- end }}
+
+            Below is a minute-by-minute chat transcript from Lark. Summarize and structure it for hand-off.
+            Transcript:
+            {{- range $msg := index .steps "load_thread" "thread" "conversation" }}
+            - {{$msg.timestamp}} | {{$msg.user}} :: {{$msg.message}}
+            {{- end }}
+
+            Respond in valid JSON with the following shape:
+            {
+              "summary": string,
+              "impact": [string],
+              "timeline": [{"time": string, "actor": string, "event": string, "notes": string}],
+              "action_items": [{"task": string, "owner": string, "due": string}],
+              "next_meeting": [string]
+            }
+
+            Ensure the timeline is ordered and timestamps remain ISO8601.
+          expect:
+            format: json
+          capture:
+            analysis: json
+            raw_text: text
+outputs:
+  timeline_markdown:
+    template: |
+      ## Incident Timeline
+      {{- $timeline := index .steps "summarize_thread" "analysis" "timeline" }}
+      {{- if $timeline }}
+      {{- range $event := $timeline }}
+      - **{{$event.time}}** ({{$event.actor}}): {{$event.event}}{{ if $event.notes }} � {{$event.notes}}{{ end }}
+      {{- end }}
+      {{- else }}
+      - Timeline data not available.
+      {{- end }}
+  rca_draft:
+    template: |
+      # RCA Draft
+
+      ## Executive Summary
+      {{ index .steps "summarize_thread" "analysis" "summary" }}
+
+      ## Impact
+      {{- $impact := index .steps "summarize_thread" "analysis" "impact" }}
+      {{- if $impact }}
+      {{- range $item := $impact }}
+      - {{$item}}
+      {{- end }}
+      {{- else }}
+      - Impact details pending.
+      {{- end }}
+
+      ## Timeline
+      {{- $timeline := index .steps "summarize_thread" "analysis" "timeline" }}
+      {{- if $timeline }}
+      {{- range $event := $timeline }}
+      - **{{$event.time}}** ({{$event.actor}}): {{$event.event}}{{ if $event.notes }} � {{$event.notes}}{{ end }}
+      {{- end }}
+      {{- else }}
+      - Timeline pending further review.
+      {{- end }}
+
+      ## Action Items
+      {{- $actions := index .steps "summarize_thread" "analysis" "action_items" }}
+      {{- if $actions }}
+      {{- range $action := $actions }}
+      - {{$action.owner}}: {{$action.task}}{{ if $action.due }} (due {{$action.due}}){{ end }}
+      {{- end }}
+      {{- else }}
+      - Action items to be defined.
+      {{- end }}
+
+      ## Next Meeting Agenda
+      {{- $agenda := index .steps "summarize_thread" "analysis" "next_meeting" }}
+      {{- if $agenda }}
+      {{- range $entry := $agenda }}
+      - {{$entry}}
+      {{- end }}
+      {{- else }}
+      - Schedule follow-up with incident stakeholders.
+      {{- end }}
+

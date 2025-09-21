@@ -1,0 +1,40 @@
+{
+  "thread_id": "lark-incident-4471",
+  "conversation": [
+    {
+      "timestamp": "2025-09-19T13:02:10Z",
+      "user": "Alice (SRE)",
+      "message": "PagerDuty paged me for spike in 5xx on checkout-api. Investigating logs."
+    },
+    {
+      "timestamp": "2025-09-19T13:03:42Z",
+      "user": "Bob (Oncall Manager)",
+      "message": "Acknowledged. Infra shows rollout #6021 started 10 minutes ago."
+    },
+    {
+      "timestamp": "2025-09-19T13:05:05Z",
+      "user": "Alice (SRE)",
+      "message": "Found error: upstream TLS handshake failure talking to payments-service."
+    },
+    {
+      "timestamp": "2025-09-19T13:09:17Z",
+      "user": "Cara (Payments SRE)",
+      "message": "Payments rotated certs at 12:55Z, new bundle missing intermediate."
+    },
+    {
+      "timestamp": "2025-09-19T13:12:33Z",
+      "user": "Alice (SRE)",
+      "message": "Rolling back checkout-api deployment to previous image 2025.09.17."
+    },
+    {
+      "timestamp": "2025-09-19T13:18:04Z",
+      "user": "Bob (Oncall Manager)",
+      "message": "Rollback done. Error budget burn stabilized, 5xx back under 1%."
+    },
+    {
+      "timestamp": "2025-09-19T13:24:49Z",
+      "user": "Cara (Payments SRE)",
+      "message": "Issued new cert with intermediate. Will stage fix after joint review."
+    }
+  ]
+}
