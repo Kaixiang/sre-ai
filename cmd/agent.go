@@ -40,7 +40,7 @@ func newAgentRunCmd() *cobra.Command {
                 return err
             }
 
-            runner, err := agent.NewRunner(workflowPath, &globalOpts, provided)
+            runner, err := agent.NewRunner(workflowPath, &globalOpts, provided, cmd.ErrOrStderr())
             if err != nil {
                 return err
             }
@@ -152,4 +152,9 @@ func formatAgentTextOutput(res *agent.Result) string {
 
     return buf.String()
 }
+
+
+
+
+
 

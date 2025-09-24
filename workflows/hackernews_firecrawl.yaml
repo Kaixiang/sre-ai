@@ -47,7 +47,7 @@ workflow:
         - name: bilingual_summary
           type: prompt
           template: |
-            You are an editorial assistant preparing a bilingual digest of technology news for SRE/DevOps professionals.
+            You are an editorial assistant preparing a bilingual digest of technology news from the FireCrawl output(Don't make up things, if FireCrawl shows no content, don't do anything).
             {{- with index .inputs "language_hint" }}
             Additional stylistic guidance: {{ . }}
             {{- end }}
