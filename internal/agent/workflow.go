@@ -1,21 +1,21 @@
 package agent
 
 import (
-	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
-	"text/template"
+    "context"
+    "encoding/json"
+    "errors"
+    "fmt"
+    "os"
+    "path/filepath"
+    "strings"
+    "text/template"
 
-	"github.com/example/sre-ai/internal/config"
-	"github.com/example/sre-ai/internal/credentials"
-	"github.com/example/sre-ai/internal/providers"
-	"gopkg.in/yaml.v3"
+    "github.com/example/sre-ai/internal/config"
+    "github.com/example/sre-ai/internal/credentials"
+    "github.com/example/sre-ai/internal/mcp"
+    "github.com/example/sre-ai/internal/providers"
+    "gopkg.in/yaml.v3"
 )
-
 // Workflow describes an agent workflow configuration.
 type Workflow struct {
 	Version     string                `yaml:"version"`
@@ -46,10 +46,13 @@ type InputSpec struct {
 
 // ToolSpec registers a tool available to workflow steps.
 type ToolSpec struct {
-	Kind        string      `yaml:"kind"`
-	Description string      `yaml:"description"`
-	SampleFile  string      `yaml:"sample_file"`
-	SampleData  interface{} `yaml:"sample_data"`
+    Kind        string            `yaml:"kind"`
+    Description string            `yaml:"description"`
+    SampleFile  string            `yaml:"sample_file"`
+    SampleData  interface{}       `yaml:"sample_data"`
+    Alias       string            `yaml:"alias"`
+    DefaultArgs []string          `yaml:"default_args"`
+    Env         map[string]string `yaml:"env"`
 }
 
 // WorkflowSpec contains the ordered stages to execute.
@@ -233,8 +236,8 @@ func (r *Runner) executeStep(ctx context.Context, stage StageSpec, stepName stri
 	}
 
 	switch strings.ToLower(step.Type) {
-	case "tool":
-		result, stepErr = r.executeTool(step, renderedParams)
+    case "tool":
+        result, stepErr = r.executeTool(ctx, step, renderedParams)
 	case "prompt":
 		result, stepErr = r.executePrompt(ctx, step, renderedParams)
 	default:
@@ -266,25 +269,81 @@ func (r *Runner) executeStep(ctx context.Context, stage StageSpec, stepName stri
 	return result, nil
 }
 
-func (r *Runner) executeTool(step StepSpec, params map[string]interface{}) (map[string]interface{}, error) {
-	toolName := step.Tool
-	spec, ok := r.workflow.Tools[toolName]
-	if !ok {
-		return nil, fmt.Errorf("tool %s is not defined", toolName)
-	}
+func (r *Runner) executeTool(ctx context.Context, step StepSpec, params map[string]interface{}) (map[string]interface{}, error) {
+    toolName := step.Tool
+    spec, ok := r.workflow.Tools[toolName]
+    if !ok {
+        return nil, fmt.Errorf("tool %s is not defined", toolName)
+    }
 
-	switch strings.ToLower(spec.Kind) {
-	case "mock", "sample":
-		data, err := r.resolveSampleData(spec)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]interface{}{"data": data}, nil
-	default:
-		return nil, fmt.Errorf("tool kind %s not yet supported", spec.Kind)
-	}
+    switch strings.ToLower(spec.Kind) {
+    case "mock", "sample":
+        data, err := r.resolveSampleData(spec)
+        if err != nil {
+            return nil, err
+        }
+        return map[string]interface{}{"data": data}, nil
+    case "mcp":
+        return r.executeMCPTool(ctx, toolName, spec, params)
+    default:
+        return nil, fmt.Errorf("tool kind %s not yet supported", spec.Kind)
+    }
 }
+func (r *Runner) executeMCPTool(ctx context.Context, toolName string, spec ToolSpec, params map[string]interface{}) (map[string]interface{}, error) {
+    alias := strings.TrimSpace(spec.Alias)
+    if val, ok := params["alias"].(string); ok && strings.TrimSpace(val) != "" {
+        alias = strings.TrimSpace(val)
+    }
+    if alias == "" {
+        return nil, fmt.Errorf("mcp tool %s missing alias", toolName)
+    }
 
+    extraArgs, err := stringSliceFromValue(params["args"])
+    if err != nil {
+        return nil, fmt.Errorf("tool %s args: %w", toolName, err)
+    }
+    args := append([]string{}, spec.DefaultArgs...)
+    args = append(args, extraArgs...)
+
+    stdin, err := stringFromValue(params["stdin"])
+    if err != nil {
+        return nil, fmt.Errorf("tool %s stdin: %w", toolName, err)
+    }
+
+    env := make(map[string]string)
+    for k, v := range spec.Env {
+        env[k] = v
+    }
+    if val, ok := params["env"]; ok {
+        extraEnv, err := stringMapFromValue(val)
+        if err != nil {
+            return nil, fmt.Errorf("tool %s env: %w", toolName, err)
+        }
+        for k, v := range extraEnv {
+            env[k] = v
+        }
+    }
+
+    stdout, stderr, code, runErr := mcp.RunLocalCommand(ctx, alias, args, stdin, env)
+    result := map[string]interface{}{
+        "stdout": strings.TrimSpace(stdout),
+        "exit_code": code,
+    }
+    if trimmed := strings.TrimSpace(stderr); trimmed != "" {
+        result["stderr"] = trimmed
+    }
+    if raw := strings.TrimSpace(stdout); raw != "" {
+        var parsed interface{}
+        if json.Unmarshal([]byte(raw), &parsed) == nil {
+            result["json"] = parsed
+        }
+    }
+    if runErr != nil {
+        result["error"] = runErr.Error()
+        return result, runErr
+    }
+    return result, nil
+}
 func (r *Runner) resolveSampleData(spec ToolSpec) (interface{}, error) {
 	if spec.SampleData != nil {
 		return spec.SampleData, nil
@@ -492,6 +551,89 @@ func (r *Runner) StepState() map[string]map[string]interface{} {
 func (r *Runner) WorkflowMeta() *Workflow {
 	return r.workflow
 }
+func stringSliceFromValue(value interface{}) ([]string, error) {
+    if value == nil {
+        return nil, nil
+    }
+    switch typed := value.(type) {
+    case []string:
+        return append([]string{}, typed...), nil
+    case string:
+        str := strings.TrimSpace(typed)
+        if str == "" {
+            return nil, nil
+        }
+        return []string{str}, nil
+    case []interface{}:
+        out := make([]string, 0, len(typed))
+        for _, item := range typed {
+            str, err := stringFromValue(item)
+            if err != nil {
+                return nil, err
+            }
+            if str != "" {
+                out = append(out, str)
+            }
+        }
+        return out, nil
+    default:
+        str, err := stringFromValue(value)
+        if err != nil || str == "" {
+            return nil, err
+        }
+        return []string{str}, nil
+    }
+}
+
+func stringMapFromValue(value interface{}) (map[string]string, error) {
+    if value == nil {
+        return map[string]string{}, nil
+    }
+    out := make(map[string]string)
+    switch typed := value.(type) {
+    case map[string]string:
+        for k, v := range typed {
+            if k == "" {
+                continue
+            }
+            out[k] = v
+        }
+    case map[string]interface{}:
+        for k, v := range typed {
+            if k == "" {
+                continue
+            }
+            str, err := stringFromValue(v)
+            if err != nil {
+                return nil, err
+            }
+            out[k] = str
+        }
+    default:
+        return nil, fmt.Errorf("expected map for env, got %T", value)
+    }
+    return out, nil
+}
+
+func stringFromValue(value interface{}) (string, error) {
+    if value == nil {
+        return "", nil
+    }
+    switch typed := value.(type) {
+    case string:
+        return typed, nil
+    case fmt.Stringer:
+        return typed.String(), nil
+    case []byte:
+        return string(typed), nil
+    default:
+        data, err := json.Marshal(typed)
+        if err != nil {
+            return "", fmt.Errorf("unable to convert %T to string", value)
+        }
+        return string(data), nil
+    }
+}
 func (r *Runner) renderParams(params map[string]interface{}) (map[string]interface{}, error) {
 	if params == nil {
 		return map[string]interface{}{}, nil
@@ -535,3 +677,14 @@ func (r *Runner) renderValue(value interface{}) (interface{}, error) {
 		return value, nil
 	}
 }
+
+
+
+
+
+
+
+
+
+
+

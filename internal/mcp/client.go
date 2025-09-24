@@ -7,6 +7,7 @@ import (
     "os"
     "path/filepath"
     "sort"
+    "strings"
     "sync"
 
     "github.com/example/sre-ai/internal/config"
@@ -24,10 +25,40 @@ type Manifest struct {
     Raw          json.RawMessage  `json:"-"`
 }
 
-// Client represents a connection to an MCP server manifest.
+// ServerDefinition describes how to launch a local MCP server process.
+type ServerDefinition struct {
+    Command string            `json:"command"`
+    Args    []string          `json:"args"`
+    Env     map[string]string `json:"env"`
+    Workdir string            `json:"workdir"`
+    Notes   string            `json:"notes,omitempty"`
+}
+
+// Source enumerates how an MCP server was registered.
+type Source string
+
+const (
+    SourceEmbedded Source = "embedded"
+    SourceConfig   Source = "config"
+    SourceLocal    Source = "local"
+)
+
+// Client represents a connection to an MCP server manifest or local definition.
 type Client struct {
-    Alias    string
-    Manifest Manifest
+    Alias      string
+    Manifest   *Manifest
+    Definition *ServerDefinition
+    Source     Source
+    Origin     string
+}
+
+// ClientInfo is a serialisable description of a registered server.
+type ClientInfo struct {
+    Alias   string   `json:"alias"`
+    Source  string   `json:"source"`
+    Command string   `json:"command,omitempty"`
+    Args    []string `json:"args,omitempty"`
+    Origin  string   `json:"origin,omitempty"`
 }
 
 // Registry maintains MCP clients keyed by alias.
@@ -41,14 +72,30 @@ func NewRegistry() *Registry {
     return &Registry{clients: make(map[string]*Client)}
 }
 
-// Register adds a manifest to the registry.
-func (r *Registry) Register(alias string, manifest Manifest) {
+// Reset removes every entry from the registry.
+func (r *Registry) Reset() {
     r.mu.Lock()
     defer r.mu.Unlock()
-    r.clients[alias] = &Client{Alias: alias, Manifest: manifest}
+    r.clients = make(map[string]*Client)
 }
 
-// Remove deletes a manifest from the registry.
+// RegisterManifest adds a manifest-based server to the registry.
+func (r *Registry) RegisterManifest(alias string, manifest Manifest, source Source, origin string) {
+    r.mu.Lock()
+    defer r.mu.Unlock()
+    copy := manifest
+    r.clients[alias] = &Client{Alias: alias, Manifest: &copy, Source: source, Origin: origin}
+}
+
+// RegisterLocal stores a local command-based server definition.
+func (r *Registry) RegisterLocal(alias string, def ServerDefinition, origin string) {
+    r.mu.Lock()
+    defer r.mu.Unlock()
+    copy := def
+    r.clients[alias] = &Client{Alias: alias, Definition: &copy, Source: SourceLocal, Origin: origin}
+}
+
+// Remove deletes a server from the registry.
 func (r *Registry) Remove(alias string) {
     r.mu.Lock()
     defer r.mu.Unlock()
@@ -75,13 +122,32 @@ func (r *Registry) List() []string {
     return aliases
 }
 
+// Snapshot returns detailed client information suitable for display.
+func (r *Registry) Snapshot() []ClientInfo {
+    r.mu.RLock()
+    defer r.mu.RUnlock()
+    infos := make([]ClientInfo, 0, len(r.clients))
+    for _, client := range r.clients {
+        info := ClientInfo{Alias: client.Alias, Source: string(client.Source), Origin: client.Origin}
+        if client.Definition != nil {
+            info.Command = client.Definition.Command
+            info.Args = append([]string(nil), client.Definition.Args...)
+        }
+        infos = append(infos, info)
+    }
+    sort.Slice(infos, func(i, j int) bool { return infos[i].Alias < infos[j].Alias })
+    return infos
+}
+
 // DefaultRegistry is the singleton used by the CLI.
 var DefaultRegistry = NewRegistry()
 
-// Warmup loads manifests configured via flags or config file.
+// Warmup loads embedded defaults, config manifests, and local server definitions.
 func Warmup(ctx context.Context, opts *config.GlobalOptions) error {
-    if len(opts.MCPServers) == 0 {
-        return loadEmbeddedDefaults()
+    DefaultRegistry.Reset()
+
+    if err := loadEmbeddedDefaults(); err != nil {
+        return err
     }
 
     for alias, location := range opts.MCPServers {
@@ -89,7 +155,11 @@ func Warmup(ctx context.Context, opts *config.GlobalOptions) error {
         if err != nil {
             return fmt.Errorf("load manifest %s: %w", alias, err)
         }
-        DefaultRegistry.Register(alias, manifest)
+        DefaultRegistry.RegisterManifest(alias, manifest, SourceConfig, expandPath(location))
+    }
+
+    if err := registerLocalServers(); err != nil {
+        return err
     }
 
     return nil
@@ -118,11 +188,12 @@ func expandPath(input string) string {
     if input == "" {
         return input
     }
-    if input[0] == '~' {
+    if strings.HasPrefix(input, "~") {
         home, err := os.UserHomeDir()
         if err == nil {
-            return filepath.Join(home, input[1:])
+            return filepath.Join(home, strings.TrimPrefix(input, "~"))
         }
     }
     return input
 }
+

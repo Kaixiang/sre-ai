@@ -152,3 +152,4 @@ func formatAgentTextOutput(res *agent.Result) string {
 
     return buf.String()
 }
+

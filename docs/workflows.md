@@ -99,6 +99,30 @@ Tools act as an allowlist for callable resources. In the MVP they support `kind:
 tools:
   lark_thread:
     kind: sample
+When a step references `kind: sample` the CLI returns fixture data. To connect real MCP servers, configure them with `sre-ai mcp` (see `docs/mcp.md`) and reference the alias in future tool kinds (e.g., upcoming `kind: mcp`).
+### MCP Tools
+
+Use `kind: mcp` to call a locally registered MCP server. Declare the default alias and any base arguments in the tool definition, then append per-step arguments via `params.args`:
+
+```yaml
+tools:
+  firecrawl:
+    kind: mcp
+    alias: firecrawl-mcp
+    default_args: ["crawl"]
+
+steps:
+  - type: tool
+    tool: firecrawl
+    params:
+      args: ["hacker-news", "--format=json", "--limit=20"]
+    capture:
+      stdout: stdout
+      json: json
+```
+
+The runner looks up the alias using `sre-ai mcp` configuration, launches the associated command (with the bundled Node runtime), and returns `stdout`/`stderr`/`exit_code`. If the command emits JSON, it is automatically exposed via `capture.json`.
+
     description: Static export of a Lark incident conversation
     sample_file: sample_data/lark_thread.json
 ```

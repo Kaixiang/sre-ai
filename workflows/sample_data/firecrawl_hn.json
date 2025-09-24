@@ -1,0 +1,26 @@
+{
+  "source": "hacker-news",
+  "fetched_at": "2025-09-23T13:50:00Z",
+  "stories": [
+    {"rank": 1, "title": "Rust 2.0 preview focuses on async simplicity", "url": "https://news.ycombinator.com/item?id=41000001", "summary": "Rust core team shares a preview of language-level async ergonomics targeting 2026 stabilization."},
+    {"rank": 2, "title": "DIY geothermal cooling for home servers", "url": "https://news.ycombinator.com/item?id=41000002", "summary": "A maker documents building a closed-loop geothermal system that cools homelab racks for under $2k."},
+    {"rank": 3, "title": "Postgres 17 introduces built-in vector indexing", "url": "https://news.ycombinator.com/item?id=41000003", "summary": "Upcoming PostgreSQL release integrates IVF-Flat indexes, reducing reliance on extensions for AI workloads."},
+    {"rank": 4, "title": "Lessons from migrating a bank off COBOL", "url": "https://news.ycombinator.com/item?id=41000004", "summary": "A financial institution details a five-year journey replacing COBOL with Kotlin services without downtime."},
+    {"rank": 5, "title": "Inside the open-source GPU that taped out on Sky130", "url": "https://news.ycombinator.com/item?id=41000005", "summary": "Engineers release design docs for an open GPU targeting academic workloads using the SkyWater ASIC shuttle."},
+    {"rank": 6, "title": "SQLite adds WASM support for browser-native apps", "url": "https://news.ycombinator.com/item?id=41000006", "summary": "SQLite 3.47 ships with first-party WASM bindings, enabling persistence without backend servers."},
+    {"rank": 7, "title": "An SDR-based approach to decoding SpaceX Starlink beacons", "url": "https://news.ycombinator.com/item?id=41000007", "summary": "Security researchers show how to capture and demodulate Starlink beacon frames using commodity SDR rigs."},
+    {"rank": 8, "title": "Scaling LLM evaluation with human preference markets", "url": "https://news.ycombinator.com/item?id=41000008", "summary": "A research group proposes prediction markets where labelers trade contracts on model quality scores."},
+    {"rank": 9, "title": "Rebuilding a PDP-11 from TTL in 2025", "url": "https://news.ycombinator.com/item?id=41000009", "summary": "Retro computing fans document a modern recreation of the PDP-11/45 using readily available TTL chips."},
+    {"rank": 10, "title": "Firefox gets encrypted Client Hello by default", "url": "https://news.ycombinator.com/item?id=41000010", "summary": "Mozilla enables Encrypted Client Hello (ECH) in Nightly builds, shielding domains from passive observers."},
+    {"rank": 11, "title": "How we shrank our container footprint by 80%", "url": "https://news.ycombinator.com/item?id=41000011", "summary": "Case study showing multi-stage builds, distroless images, and binary slimming delivering dramatic savings."},
+    {"rank": 12, "title": "Designing resilient edge networks for wildfire response", "url": "https://news.ycombinator.com/item?id=41000012", "summary": "Nonprofit details a mesh of LoRaWAN and LTE gateways that kept sensors online during California wildfires."},
+    {"rank": 13, "title": "Figma open-sources its vector boolean engine", "url": "https://news.ycombinator.com/item?id=41000013", "summary": "Figma engineers published the core C++ library powering boolean operations to reduce duplicated work."},
+    {"rank": 14, "title": "The math behind 1000x superresolution microscopy", "url": "https://news.ycombinator.com/item?id=41000014", "summary": "Researchers explain compressed sensing techniques that unlock extreme resolution in live-cell imaging."},
+    {"rank": 15, "title": "Practical guide to homomorphic encryption at scale", "url": "https://news.ycombinator.com/item?id=41000015", "summary": "A startup shares lessons deploying fully homomorphic encryption for secure cloud ML inference."},
+    {"rank": 16, "title": "Migrating 30TB of Git history without downtime", "url": "https://news.ycombinator.com/item?id=41000016", "summary": "Git hosting provider describes an rsync+partial-clone strategy to move petabyte-scale repos live."},
+    {"rank": 17, "title": "Teaching compilers SIMD through reinforcement learning", "url": "https://news.ycombinator.com/item?id=41000017", "summary": "Paper explores using RL agents to generate vectorization heuristics that outperform hand-written rules."},
+    {"rank": 18, "title": "An open protocol for portable personal knowledge graphs", "url": "https://news.ycombinator.com/item?id=41000018", "summary": "Community proposal outlines JSON-LD schemas and sync semantics for interoperable note-taking systems."},
+    {"rank": 19, "title": "A 3D-printed wind turbine that fits in carry-on luggage", "url": "https://news.ycombinator.com/item?id=41000019", "summary": "Maker creates a collapsible turbine providing 120W output for off-grid camping adventures."},
+    {"rank": 20, "title": "Reverse-engineering the DMCA takedown ecosystem", "url": "https://news.ycombinator.com/item?id=41000020", "summary": "Investigative article maps the brokers, bots, and law firms behind mass DMCA requests."}
+  ]
+}

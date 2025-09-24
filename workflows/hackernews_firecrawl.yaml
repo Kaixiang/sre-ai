@@ -1,0 +1,103 @@
+version: 0.1
+name: hackernews-firecrawl-daily
+description: Crawl Hacker News top stories via Firecrawl MCP and produce bilingual summaries.
+agent:
+  provider: gemini
+  model: gemini-1.5-flash-latest
+inputs:
+  firecrawl_alias:
+    type: string
+    description: Registered MCP alias for Firecrawl.
+    default: firecrawl
+  story_limit:
+    type: number
+    description: Number of top stories to include.
+    default: 20
+  language_hint:
+    type: string
+    description: Optional additional language guidance for the summaries.
+    required: false
+tools:
+  firecrawl:
+    kind: mcp
+    alias: firecrawl
+    default_args: ["crawl"]
+workflow:
+  stages:
+    - id: collect
+      kind: collect
+      description: Run Firecrawl against Hacker News to fetch the latest top stories.
+      steps:
+        - name: firecrawl_crawl
+          type: tool
+          tool: firecrawl
+          params:
+            alias: "{{ .inputs.firecrawl_alias }}"
+            args:
+              - hacker-news
+              - "--format=json"
+              - "--limit={{ .inputs.story_limit }}"
+          capture:
+            stdout: stdout
+            json: json
+    - id: summarize
+      kind: plan
+      description: Generate bilingual summaries for each story.
+      steps:
+        - name: bilingual_summary
+          type: prompt
+          template: |
+            You are an editorial assistant preparing a bilingual digest of technology news for SRE/DevOps professionals.
+            {{- with index .inputs "language_hint" }}
+            Additional stylistic guidance: {{ . }}
+            {{- end }}
+
+            Firecrawl output (JSON):
+            {{- if index .steps "firecrawl_crawl" "json" }}
+            {{ toJSON (index .steps "firecrawl_crawl" "json") }}
+            {{- else }}
+            {{ index .steps "firecrawl_crawl" "stdout" }}
+            {{- end }}
+
+            Produce a JSON document with this shape:
+            {
+              "stories": [
+                {
+                  "rank": number,
+                  "title": string,
+                  "url": string,
+                  "english_summary": string,
+                  "chinese_summary": string
+                }
+              ]
+            }
+            Requirements:
+            - Include exactly {{ .inputs.story_limit }} entries if the crawl returned that many; otherwise include all available.
+            - Preserve the ordering reported by Firecrawl.
+            - English summaries: concise (1-2 sentences) and focused on why the story matters to engineers or SREs.
+            - Chinese summaries: ???? conveying the same key insights, not a literal translation.
+          expect:
+            format: json
+          capture:
+            stories: json
+            raw_text: text
+outputs:
+  hackernews_digest_md:
+    template: |
+      # Hacker News Top {{ .inputs.story_limit }} � Bilingual Digest
+
+      ????:Firecrawl ?? Hacker News ?????
+
+      {{- $stories := index .steps "bilingual_summary" "stories" "stories" }}
+      {{- if $stories }}
+      {{- range $story := $stories }}
+      ## {{ printf "%02d" (index $story "rank") }}. {{ $story.title }}
+
+      - **Link**: [{{ $story.url }}]({{ $story.url }})
+      - **English**: {{ $story.english_summary }}
+      - **????**: {{ $story.chinese_summary }}
+
+      {{- end }}
+      {{- else }}
+      _No stories were returned. Check Firecrawl configuration or API limits._
+      {{- end }}
