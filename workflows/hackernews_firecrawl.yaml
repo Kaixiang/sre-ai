@@ -3,7 +3,7 @@ name: hackernews-firecrawl-daily
 description: Crawl Hacker News top stories via Firecrawl MCP and produce bilingual summaries.
 agent:
   provider: gemini
-  model: gemini-1.5-flash-latest
+  model: gemini-2.5-flash
 inputs:
   firecrawl_alias:
     type: string
