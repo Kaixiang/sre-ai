@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -158,18 +161,228 @@ func newMCPTestCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			alias := args[0]
-			ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
 			defer cancel()
-			if err := mcp.TestLocalServer(ctx, alias); err != nil {
+
+			logger := newMCPLogger(cmd)
+			if logger != nil {
+				logger.Printf("probe start alias=%s", alias)
+			}
+			result, err := mcp.ProbeLocalServerWithLogger(ctx, alias, logger)
+			if err != nil {
 				return err
 			}
-			payload := map[string]any{
-				"alias":  alias,
-				"status": "ok",
+			if logger != nil {
+				logger.Printf("probe success alias=%s", alias)
 			}
-			return printOutput(cmd, payload, fmt.Sprintf("MCP server %s is launchable", alias))
+
+			payload := map[string]any{
+				"alias":            alias,
+				"server_name":      result.ServerName,
+				"server_version":   result.ServerVersion,
+				"protocol_version": result.ProtocolVersion,
+				"capabilities":     result.Capabilities,
+				"tools":            result.Tools,
+				"notifications":    result.Notifications,
+				"duration_ms":      result.Duration.Milliseconds(),
+			}
+			if result.Instructions != "" {
+				payload["instructions"] = result.Instructions
+			}
+			if result.Stderr != "" {
+				payload["stderr"] = result.Stderr
+			}
+
+			human := formatProbeHuman(alias, result)
+			return printOutput(cmd, payload, human)
 		},
 	}
+}
+
+func formatProbeHuman(alias string, result *mcp.ProbeResult) string {
+	var builder strings.Builder
+
+	header := alias
+	if result.ServerName != "" {
+		header = fmt.Sprintf("%s - %s", header, result.ServerName)
+	}
+	if result.ServerVersion != "" {
+		header = fmt.Sprintf("%s %s", header, result.ServerVersion)
+	}
+	builder.WriteString(strings.TrimSpace(header))
+	builder.WriteString("\n")
+
+	protocol := result.ProtocolVersion
+	if protocol == "" {
+		protocol = "unknown"
+	}
+	toolsCount := len(result.Tools)
+	builder.WriteString(fmt.Sprintf("Protocol %s - %d tool", protocol, toolsCount))
+	if toolsCount != 1 {
+		builder.WriteString("s")
+	}
+	if result.Duration > 0 {
+		builder.WriteString(fmt.Sprintf(" - %s", result.Duration.Round(10*time.Millisecond)))
+	}
+	builder.WriteString("\n")
+
+	caps := describeCapabilities(result.Capabilities)
+	if len(caps) == 0 {
+		builder.WriteString("Capabilities: none reported\n")
+	} else {
+		builder.WriteString("Capabilities:\n")
+		for _, cap := range caps {
+			builder.WriteString("  - ")
+			builder.WriteString(cap)
+			builder.WriteString("\n")
+		}
+	}
+
+	if toolsCount == 0 {
+		builder.WriteString("Tools: none reported\n")
+	} else {
+		builder.WriteString("Tools:\n")
+		for _, tool := range result.Tools {
+			display := tool.Title
+			if display == "" {
+				display = tool.Name
+			}
+			if display == "" {
+				display = "(unnamed tool)"
+			}
+			desc := tool.Description
+			if desc == "" {
+				desc = "(no description)"
+			}
+			builder.WriteString(fmt.Sprintf("  - %s: %s\n", display, desc))
+			if len(tool.InputSchema) > 0 {
+				builder.WriteString("    schema: ")
+				builder.WriteString(compactPreview(tool.InputSchema))
+				builder.WriteString("\n")
+			}
+		}
+	}
+
+	if instr := strings.TrimSpace(result.Instructions); instr != "" {
+		builder.WriteString("Instructions:\n")
+		for _, line := range strings.Split(instr, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				continue
+			}
+			builder.WriteString("  ")
+			builder.WriteString(trimmed)
+			builder.WriteString("\n")
+		}
+	}
+
+	if len(result.Notifications) > 0 {
+		builder.WriteString("Notifications:\n")
+		for _, note := range result.Notifications {
+			builder.WriteString("  - ")
+			builder.WriteString(note.Method)
+			if note.Detail != "" {
+				builder.WriteString(": ")
+				builder.WriteString(note.Detail)
+			}
+			builder.WriteString("\n")
+		}
+	}
+
+	if result.Stderr != "" {
+		builder.WriteString("stderr:\n")
+		for _, line := range strings.Split(result.Stderr, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				continue
+			}
+			builder.WriteString("  ")
+			builder.WriteString(trimmed)
+			builder.WriteString("\n")
+		}
+	}
+
+	return strings.TrimRight(builder.String(), "\n")
+}
+
+func describeCapabilities(caps map[string]interface{}) []string {
+	if len(caps) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(caps))
+	for key := range caps {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	lines := make([]string, 0, len(keys))
+	for _, key := range keys {
+		value := caps[key]
+		switch typed := value.(type) {
+		case map[string]interface{}:
+			innerKeys := make([]string, 0, len(typed))
+			for innerKey, innerValue := range typed {
+				switch val := innerValue.(type) {
+				case bool:
+					innerKeys = append(innerKeys, fmt.Sprintf("%s=%t", innerKey, val))
+				case string:
+					if val == "" {
+						innerKeys = append(innerKeys, innerKey)
+					} else {
+						innerKeys = append(innerKeys, fmt.Sprintf("%s=%s", innerKey, val))
+					}
+				default:
+					innerKeys = append(innerKeys, fmt.Sprintf("%s=%s", innerKey, compactPreview(innerValue)))
+				}
+			}
+			sort.Strings(innerKeys)
+			if len(innerKeys) > 0 {
+				lines = append(lines, fmt.Sprintf("%s (%s)", key, strings.Join(innerKeys, ", ")))
+			} else {
+				lines = append(lines, key)
+			}
+		case bool:
+			if typed {
+				lines = append(lines, key)
+			} else {
+				lines = append(lines, fmt.Sprintf("%s=false", key))
+			}
+		default:
+			lines = append(lines, fmt.Sprintf("%s=%s", key, compactPreview(value)))
+		}
+	}
+	return lines
+}
+
+func compactPreview(value interface{}) string {
+	if value == nil {
+		return "null"
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return "<unserializable>"
+	}
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, data); err == nil {
+		data = buf.Bytes()
+	}
+	if len(data) > 160 {
+		data = append(data[:157], '.', '.', '.')
+	}
+	return string(data)
+}
+
+func newMCPLogger(cmd *cobra.Command) mcp.Logger {
+	if globalOpts.Verbose == 0 {
+		return nil
+	}
+
+	writer := cmd.ErrOrStderr()
+	if writer == nil {
+		writer = os.Stderr
+	}
+
+	return log.New(writer, "[mcp] ", 0)
 }
 
 func splitAliasPath(input string) (string, string, error) {

@@ -1,15 +1,19 @@
 package mcp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -29,46 +33,487 @@ func RunLocalCommand(ctx context.Context, alias string, extraArgs []string, stdi
 
 // TestLocalServer attempts to start the configured command and ensures it can be launched.
 func TestLocalServer(ctx context.Context, alias string) error {
-	return TestLocalServerWithLogger(ctx, alias, nil)
+	_, err := ProbeLocalServer(ctx, alias)
+	return err
 }
 
 // TestLocalServerWithLogger allows injecting a logger for verbose output.
 func TestLocalServerWithLogger(ctx context.Context, alias string, logger Logger) error {
+	_, err := ProbeLocalServerWithLogger(ctx, alias, logger)
+	return err
+}
+
+// ToolSummary describes a tool exposed by a local MCP server.
+type ToolSummary struct {
+	Name        string                 `json:"name"`
+	Title       string                 `json:"title,omitempty"`
+	Description string                 `json:"description,omitempty"`
+	InputSchema map[string]interface{} `json:"inputSchema,omitempty"`
+	Annotations map[string]interface{} `json:"annotations,omitempty"`
+}
+
+// Notification captures a server notification observed during probing.
+type Notification struct {
+	Method string `json:"method"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// ProbeResult contains metadata collected from a probe run.
+type ProbeResult struct {
+	Alias           string                 `json:"alias"`
+	ServerName      string                 `json:"serverName,omitempty"`
+	ServerVersion   string                 `json:"serverVersion,omitempty"`
+	ProtocolVersion string                 `json:"protocolVersion,omitempty"`
+	Instructions    string                 `json:"instructions,omitempty"`
+	Capabilities    map[string]interface{} `json:"capabilities,omitempty"`
+	Tools           []ToolSummary          `json:"tools,omitempty"`
+	Notifications   []Notification         `json:"notifications,omitempty"`
+	Duration        time.Duration          `json:"duration"`
+	Stderr          string                 `json:"stderr,omitempty"`
+}
+
+// ProbeLocalServer connects to a local MCP server using the stdio transport and reports its tooling.
+func ProbeLocalServer(ctx context.Context, alias string) (*ProbeResult, error) {
+	return ProbeLocalServerWithLogger(ctx, alias, nil)
+}
+
+// ProbeLocalServerWithLogger behaves like ProbeLocalServer but emits debug logging when logger is provided.
+func ProbeLocalServerWithLogger(ctx context.Context, alias string, logger Logger) (*ProbeResult, error) {
+	return probeLocalServer(ctx, alias, logger)
+}
+
+// jsonrpcEnvelope represents a JSON-RPC message exchanged with the MCP server.
+type jsonrpcEnvelope struct {
+	JSONRPC string           `json:"jsonrpc"`
+	ID      *json.RawMessage `json:"id,omitempty"`
+	Method  string           `json:"method,omitempty"`
+	Params  json.RawMessage  `json:"params,omitempty"`
+	Result  json.RawMessage  `json:"result,omitempty"`
+	Error   *jsonrpcError    `json:"error,omitempty"`
+}
+
+type jsonrpcError struct {
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data,omitempty"`
+}
+
+func probeLocalServer(ctx context.Context, alias string, logger Logger) (*ProbeResult, error) {
+	start := time.Now()
+
 	def, err := GetLocalServer(alias)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if def.Command == "" {
-		return errors.New("server command is empty")
+		return nil, errors.New("server command is empty")
 	}
 
-	cmd, _, stderr, err := buildCommand(ctx, alias, def, nil, "", nil, logger)
-	if err != nil {
-		return err
+	args := append([]string{}, def.Args...)
+	envMap := map[string]string{}
+	for k, v := range def.Env {
+		envMap[k] = v
 	}
+
+	if logger != nil {
+		logger.Printf("mcp probe alias=%s command=%s args=%s", alias, def.Command, strings.Join(args, " "))
+		logger.Printf("mcp probe alias=%s env=%s", alias, debugMap(envMap))
+		if def.Workdir != "" {
+			logger.Printf("mcp probe alias=%s workdir=%s", alias, def.Workdir)
+		}
+	}
+
+	cmd := exec.CommandContext(ctx, def.Command, args...)
+	if def.Workdir != "" {
+		cmd.Dir = def.Workdir
+	}
+	cmd.Env = mergeEnv(envMap)
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start %s: %w", alias, err)
+		return nil, fmt.Errorf("failed to start %s: %w", alias, err)
 	}
 
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 
-	select {
-	case err := <-done:
-		if err != nil {
-			return fmt.Errorf("%s exited with error: %w\n%s", alias, err, tail(stderr.String(), 400))
+	reader := bufio.NewReader(stdoutPipe)
+	writer := bufio.NewWriter(stdinPipe)
+
+	success := false
+	defer func() {
+		_ = writer.Flush()
+		_ = stdinPipe.Close()
+		wait := 200 * time.Millisecond
+		if success {
+			wait = 750 * time.Millisecond
 		}
-	case <-time.After(700 * time.Millisecond):
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-			<-done
+		select {
+		case err := <-done:
+			if err != nil && logger != nil && success {
+				logger.Printf("mcp probe alias=%s exit error after probe: %v", alias, err)
+			}
+		case <-time.After(wait):
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+				<-done
+			}
 		}
+	}()
+
+	responses := make(map[string]jsonrpcEnvelope)
+	notifications := make([]Notification, 0, 4)
+	result := &ProbeResult{Alias: alias}
+
+	requestID := 1
+	initReq := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      requestID,
+		"method":  "initialize",
+		"params": map[string]interface{}{
+			"protocolVersion": "2025-06-18",
+			"clientInfo": map[string]string{
+				"name":    "sre-ai",
+				"version": "dev",
+			},
+			"capabilities": map[string]interface{}{},
+		},
 	}
 
-	return nil
+	if err := sendJSONMessage(writer, initReq); err != nil {
+		return nil, annotateProbeError(err, &stderr)
+	}
+
+	initEnv, err := awaitResponse(ctx, reader, writer, strconv.Itoa(requestID), responses, &notifications, done, alias, logger)
+	if err != nil {
+		return nil, annotateProbeError(err, &stderr)
+	}
+	if initEnv.Error != nil {
+		return nil, annotateProbeError(fmt.Errorf("initialize failed: %s", initEnv.Error.Message), &stderr)
+	}
+
+	var initData struct {
+		Capabilities    map[string]interface{} `json:"capabilities"`
+		Instructions    string                 `json:"instructions"`
+		ProtocolVersion string                 `json:"protocolVersion"`
+		ServerInfo      struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		} `json:"serverInfo"`
+	}
+	if err := json.Unmarshal(initEnv.Result, &initData); err != nil {
+		return nil, annotateProbeError(fmt.Errorf("decode initialize result: %w", err), &stderr)
+	}
+
+	result.Capabilities = initData.Capabilities
+	result.Instructions = strings.TrimSpace(initData.Instructions)
+	result.ProtocolVersion = initData.ProtocolVersion
+	result.ServerName = initData.ServerInfo.Name
+	result.ServerVersion = initData.ServerInfo.Version
+
+	if err := sendJSONMessage(writer, map[string]interface{}{
+		"jsonrpc": "2.0",
+		"method":  "notifications/initialized",
+		"params":  map[string]interface{}{},
+	}); err != nil {
+		return nil, annotateProbeError(err, &stderr)
+	}
+
+	cursor := ""
+	for {
+		requestID++
+		req := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      requestID,
+			"method":  "tools/list",
+		}
+		if cursor != "" {
+			req["params"] = map[string]interface{}{"cursor": cursor}
+		}
+
+		if err := sendJSONMessage(writer, req); err != nil {
+			return nil, annotateProbeError(err, &stderr)
+		}
+
+		resp, err := awaitResponse(ctx, reader, writer, strconv.Itoa(requestID), responses, &notifications, done, alias, logger)
+		if err != nil {
+			return nil, annotateProbeError(err, &stderr)
+		}
+		if resp.Error != nil {
+			return nil, annotateProbeError(fmt.Errorf("tools/list failed: %s", resp.Error.Message), &stderr)
+		}
+
+		var listResult struct {
+			Tools      []map[string]interface{} `json:"tools"`
+			NextCursor string                   `json:"nextCursor"`
+		}
+		if err := json.Unmarshal(resp.Result, &listResult); err != nil {
+			return nil, annotateProbeError(fmt.Errorf("decode tools/list: %w", err), &stderr)
+		}
+
+		for _, tool := range listResult.Tools {
+			summary := ToolSummary{}
+			if name, ok := tool["name"].(string); ok {
+				summary.Name = name
+			}
+			if title, ok := tool["title"].(string); ok {
+				summary.Title = title
+			}
+			if desc, ok := tool["description"].(string); ok {
+				summary.Description = desc
+			}
+			if annotations, ok := tool["annotations"].(map[string]interface{}); ok {
+				summary.Annotations = annotations
+				if summary.Title == "" {
+					if title, ok := annotations["title"].(string); ok {
+						summary.Title = title
+					}
+				}
+			}
+			if schema, ok := tool["inputSchema"].(map[string]interface{}); ok {
+				summary.InputSchema = schema
+			}
+			result.Tools = append(result.Tools, summary)
+		}
+
+		if listResult.NextCursor == "" {
+			break
+		}
+		cursor = listResult.NextCursor
+	}
+
+	result.Notifications = notifications
+	result.Duration = time.Since(start)
+	result.Stderr = strings.TrimSpace(stderr.String())
+
+	success = true
+	return result, nil
 }
 
+func sendJSONMessage(w *bufio.Writer, payload interface{}) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	header := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(data))
+	if _, err := w.WriteString(header); err != nil {
+		return err
+	}
+	if _, err := w.Write(data); err != nil {
+		return err
+	}
+	return w.Flush()
+}
+
+func awaitResponse(
+	ctx context.Context,
+	reader *bufio.Reader,
+	writer *bufio.Writer,
+	expectID string,
+	pending map[string]jsonrpcEnvelope,
+	notifications *[]Notification,
+	done <-chan error,
+	alias string,
+	logger Logger,
+) (jsonrpcEnvelope, error) {
+	if env, ok := pending[expectID]; ok {
+		delete(pending, expectID)
+		return env, nil
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return jsonrpcEnvelope{}, ctx.Err()
+		case err := <-done:
+			if err != nil {
+				return jsonrpcEnvelope{}, fmt.Errorf("server exited: %w", err)
+			}
+			return jsonrpcEnvelope{}, errors.New("server exited before response")
+		default:
+		}
+
+		msg, err := readFramedMessage(ctx, reader)
+		if err != nil {
+			return jsonrpcEnvelope{}, err
+		}
+
+		var env jsonrpcEnvelope
+		if err := json.Unmarshal(msg, &env); err != nil {
+			return jsonrpcEnvelope{}, fmt.Errorf("decode jsonrpc envelope: %w", err)
+		}
+
+		if env.ID != nil {
+			id, err := rawMessageID(*env.ID)
+			if err != nil {
+				return jsonrpcEnvelope{}, err
+			}
+			if env.Method != "" {
+				if logger != nil {
+					logger.Printf("mcp probe alias=%s received request method=%s", alias, env.Method)
+				}
+				if err := respondMethodNotImplemented(writer, env); err != nil {
+					return jsonrpcEnvelope{}, err
+				}
+				continue
+			}
+			if id == expectID {
+				return env, nil
+			}
+			pending[id] = env
+			continue
+		}
+
+		if env.Method != "" {
+			detail := compactJSONRaw(env.Params)
+			if len(detail) > 400 {
+				detail = detail[:397] + "..."
+			}
+			*notifications = append(*notifications, Notification{Method: env.Method, Detail: detail})
+			if logger != nil {
+				logger.Printf("mcp probe alias=%s notify method=%s detail=%s", alias, env.Method, detail)
+			}
+			continue
+		}
+	}
+}
+
+func readFramedMessage(ctx context.Context, reader *bufio.Reader) ([]byte, error) {
+	length := -1
+	for {
+		line, err := readLineWithContext(ctx, reader)
+		if err != nil {
+			return nil, err
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			if length >= 0 {
+				break
+			}
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(line), "content-length:") {
+			value := strings.TrimSpace(line[len("content-length:"):])
+			l, err := strconv.Atoi(value)
+			if err != nil {
+				return nil, fmt.Errorf("invalid content-length header: %s", line)
+			}
+			length = l
+		}
+	}
+	if length < 0 {
+		return nil, errors.New("missing Content-Length header")
+	}
+	buf := make([]byte, length)
+	if err := readFullWithContext(ctx, reader, buf); err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
+func readLineWithContext(ctx context.Context, reader *bufio.Reader) (string, error) {
+	type result struct {
+		line string
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		line, err := reader.ReadString('\n')
+		ch <- result{line: line, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case res := <-ch:
+		return res.line, res.err
+	}
+}
+
+func readFullWithContext(ctx context.Context, reader *bufio.Reader, buf []byte) error {
+	type result struct {
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		_, err := io.ReadFull(reader, buf)
+		ch <- result{err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case res := <-ch:
+		return res.err
+	}
+}
+
+func rawMessageID(raw json.RawMessage) (string, error) {
+	var intID int64
+	if err := json.Unmarshal(raw, &intID); err == nil {
+		return strconv.FormatInt(intID, 10), nil
+	}
+	var strID string
+	if err := json.Unmarshal(raw, &strID); err == nil {
+		return strID, nil
+	}
+	return "", fmt.Errorf("unsupported id type: %s", string(raw))
+}
+
+func respondMethodNotImplemented(writer *bufio.Writer, env jsonrpcEnvelope) error {
+	var idValue interface{}
+	if env.ID != nil {
+		if err := json.Unmarshal(*env.ID, &idValue); err != nil {
+			idValue = nil
+		}
+	}
+	payload := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      idValue,
+		"error": map[string]interface{}{
+			"code":    -32601,
+			"message": fmt.Sprintf("method %s not implemented in probe", env.Method),
+		},
+	}
+	return sendJSONMessage(writer, payload)
+}
+
+func annotateProbeError(err error, stderr *bytes.Buffer) error {
+	if err == nil {
+		return nil
+	}
+	if stderr == nil {
+		return err
+	}
+	if tail := strings.TrimSpace(stderr.String()); tail != "" {
+		return fmt.Errorf("%w\nstderr: %s", err, tail)
+	}
+	return err
+}
+
+func compactJSONRaw(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return ""
+	}
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		return string(raw)
+	}
+	return buf.String()
+}
 func runCommandWithDefinition(ctx context.Context, alias string, def ServerDefinition, extraArgs []string, stdin string, extraEnv map[string]string, logger Logger) (string, string, int, error) {
 	if def.Command == "" {
 		return "", "", 0, errors.New("server command is empty")
